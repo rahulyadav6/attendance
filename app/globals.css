@@ -1,0 +1,45 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=DM+Mono:wght@400;500&display=swap');
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --teal-50:  #E1F5EE;
+  --teal-100: #9FE1CB;
+  --teal-200: #5DCAA5;
+  --teal-400: #1D9E75;
+  --teal-600: #0F6E56;
+  --teal-800: #085041;
+  --dark-900: #1A2820;
+  --dark-800: #243830;
+  --dark-700: #2F4A3E;
+  --gray-50:  #F8FAF9;
+  --gray-100: #EEF2F0;
+  --gray-200: #D4DDD9;
+  --gray-400: #8FA89F;
+  --gray-700: #3D5249;
+  --gray-900: #1A2820;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  font-family: 'DM Sans', system-ui, sans-serif;
+  background: var(--gray-50);
+  color: var(--gray-900);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--gray-200); border-radius: 4px; }
+
+/* Input base */
+input, select, textarea {
+  font-family: 'DM Sans', system-ui, sans-serif;
+  outline: none;
+}
+
+/* Mono utility */
+.font-mono { font-family: 'DM Mono', monospace; }
