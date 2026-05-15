@@ -6,11 +6,23 @@ import Student from "@/models/Student";
 import { format } from "date-fns";
 import jwt from "jsonwebtoken";
 
+// Euclidean distance between two 128-dim face descriptors
+function euclideanDistance(a, b) {
+  let sum = 0;
+  for (let i = 0; i < 128; i++) {
+    const diff = a[i] - b[i];
+    sum += diff * diff;
+  }
+  return Math.sqrt(sum);
+}
+
+const FACE_MATCH_THRESHOLD = 0.6; // lower = stricter
+
 // POST /api/qr/verify
-// Called when student logs in and scans QR — uses JWT to prevent proxy attendance
+// Called when student logs in and scans QR — uses JWT + face selfie to prevent proxy
 export async function POST(request) {
   await connectDB();
-  const { token, studentToken } = await request.json();
+  const { token, studentToken, selfieDescriptor } = await request.json();
 
   if (!token) return NextResponse.json({ error: "Token is required" }, { status: 400 });
   if (!studentToken) return NextResponse.json({ error: "Student authentication is required", code: "INVALID" }, { status: 400 });
@@ -47,7 +59,31 @@ export async function POST(request) {
     return NextResponse.json({ error: "Your account has been blocked. Contact your teacher.", code: "ERROR" }, { status: 403 });
   }
 
-  // 6. Check already scanned — across all rotations in this session group
+  // 6. Face verification — if student has a trained face, require selfie match
+  const hasFaceData = Array.isArray(student.descriptor) && student.descriptor.length === 128;
+
+  if (hasFaceData) {
+    if (!selfieDescriptor || !Array.isArray(selfieDescriptor) || selfieDescriptor.length !== 128) {
+      // Student has face data but no selfie provided — tell client to capture one
+      return NextResponse.json({
+        error: "Face verification required",
+        code: "FACE_REQUIRED",
+        studentName: student.name,
+      }, { status: 428 });
+    }
+
+    // Compare selfie with stored descriptor
+    const distance = euclideanDistance(student.descriptor, selfieDescriptor);
+    if (distance > FACE_MATCH_THRESHOLD) {
+      return NextResponse.json({
+        error: "Face does not match your profile. Proxy attendance is not allowed.",
+        code: "FACE_MISMATCH",
+        studentName: student.name,
+      }, { status: 403 });
+    }
+  }
+
+  // 7. Check already scanned — across all rotations in this session group
   const rootParentId = session.parentSessionId || session._id;
   const siblingSessions = await QRSession.find({
     $or: [
@@ -62,7 +98,7 @@ export async function POST(request) {
     return NextResponse.json({ error: "Attendance already marked for today", code: "DUPLICATE", studentName: student.name }, { status: 409 });
   }
 
-  // 7. Mark attendance
+  // 8. Mark attendance
   const date = format(new Date(), "yyyy-MM-dd");
   try {
     await Attendance.create({
@@ -80,7 +116,7 @@ export async function POST(request) {
     throw err;
   }
 
-  // 8. Record scan in session
+  // 9. Record scan in session
   session.scannedBy.push(student._id);
   await session.save();
 
@@ -88,7 +124,6 @@ export async function POST(request) {
     const { getIO } = await import("@/lib/socket");
     const io = getIO();
     if (io) {
-      // Notify teacher dashboard of scan
       io.to(`section:${session.sectionId}`).emit("attendance_scanned", {
         studentId: student,
         markedAt: new Date().toISOString(),
@@ -97,12 +132,18 @@ export async function POST(request) {
         studentId: student,
         markedAt: new Date().toISOString(),
       });
-      // Notify the student's own browser so their stats refresh
       io.to(`student:${student.studentId}`).emit("attendance_updated");
     }
   } catch (e) {
     console.error("Socket emit failed", e);
   }
 
-  return NextResponse.json({ success: true, message: "Attendance marked successfully!", studentName: student.name, date, method: "qr" });
+  return NextResponse.json({
+    success: true,
+    message: "Attendance marked successfully!",
+    studentName: student.name,
+    date,
+    method: "qr",
+    faceVerified: hasFaceData,
+  });
 }
