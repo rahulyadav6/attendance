@@ -4,32 +4,50 @@ import QRSession from "@/models/QRSession";
 import Attendance from "@/models/Attendance";
 import Student from "@/models/Student";
 import { format } from "date-fns";
+import jwt from "jsonwebtoken";
 
 // POST /api/qr/verify
-// Called when student scans the QR code and logs in to take attendance
+// Called when student logs in and scans QR — uses JWT to prevent proxy attendance
 export async function POST(request) {
   await connectDB();
-  const { token, studentId } = await request.json();
+  const { token, studentToken } = await request.json();
 
   if (!token) return NextResponse.json({ error: "Token is required" }, { status: 400 });
-  if (!studentId) return NextResponse.json({ error: "Student ID is required", code: "INVALID" }, { status: 400 });
+  if (!studentToken) return NextResponse.json({ error: "Student authentication is required", code: "INVALID" }, { status: 400 });
 
-  // 1. Find session
+  // 1. Verify student JWT to get their real identity
+  let decoded;
+  try {
+    decoded = jwt.verify(studentToken, process.env.JWT_SECRET);
+  } catch {
+    return NextResponse.json({ error: "Invalid or expired login. Please try again.", code: "INVALID" }, { status: 401 });
+  }
+
+  if (!decoded.id || decoded.role !== "student") {
+    return NextResponse.json({ error: "Invalid student credentials", code: "INVALID" }, { status: 401 });
+  }
+
+  // 2. Find session
   const session = await QRSession.findOne({ token });
   if (!session) return NextResponse.json({ error: "Invalid QR code", code: "INVALID" }, { status: 404 });
 
-  // 2. Check expiry
+  // 3. Check expiry
   if (new Date() > new Date(session.expiresAt)) {
     return NextResponse.json({ error: "This QR code has expired", code: "EXPIRED" }, { status: 410 });
   }
 
-  // 3. Look up student by studentId and section
-  const student = await Student.findOne({ studentId, sectionIds: session.sectionId });
+  // 4. Look up the authenticated student and verify they belong to this section
+  const student = await Student.findOne({ _id: decoded.id, sectionIds: session.sectionId });
   if (!student) {
-    return NextResponse.json({ error: "Student ID not found in this section.", code: "NOT_FOUND" }, { status: 404 });
+    return NextResponse.json({ error: "You are not enrolled in this section.", code: "NOT_FOUND" }, { status: 404 });
   }
 
-  // 5. Check already scanned — across all rotations in this session group
+  // 5. Check if student is blocked
+  if (student.isBlocked) {
+    return NextResponse.json({ error: "Your account has been blocked. Contact your teacher.", code: "ERROR" }, { status: 403 });
+  }
+
+  // 6. Check already scanned — across all rotations in this session group
   const rootParentId = session.parentSessionId || session._id;
   const siblingSessions = await QRSession.find({
     $or: [
@@ -44,7 +62,7 @@ export async function POST(request) {
     return NextResponse.json({ error: "Attendance already marked for today", code: "DUPLICATE", studentName: student.name }, { status: 409 });
   }
 
-  // 6. Mark attendance
+  // 7. Mark attendance
   const date = format(new Date(), "yyyy-MM-dd");
   try {
     await Attendance.create({
@@ -62,7 +80,7 @@ export async function POST(request) {
     throw err;
   }
 
-  // 7. Record scan in session
+  // 8. Record scan in session
   session.scannedBy.push(student._id);
   await session.save();
 

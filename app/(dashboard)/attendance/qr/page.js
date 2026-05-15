@@ -7,7 +7,7 @@ import toast from "react-hot-toast";
 import QRCode from "react-qr-code";
 import { io } from "socket.io-client";
 
-const ROTATE_INTERVAL_SECONDS = 29; // rotate QR every 29 seconds
+const ROTATE_INTERVAL_SECONDS = 45; // rotate QR every 45 seconds
 
 export default function QRAttendancePage() {
   const [sections,   setSections]   = useState([]);

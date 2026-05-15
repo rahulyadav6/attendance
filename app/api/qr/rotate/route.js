@@ -43,7 +43,7 @@ export const POST = withAuth(async (request) => {
 
   // New token expires in 60s or at overall session end, whichever is sooner
   const newToken = uuidv4();
-  const tokenExpiry = new Date(Math.min(Date.now() + 29 * 1000, overallEnd));
+  const tokenExpiry = new Date(Math.min(Date.now() + 45 * 1000, overallEnd));
   const date = currentSession.date;
 
   // Gather all scannedBy IDs from the entire rotation chain so duplicates are detected

@@ -70,8 +70,8 @@ export const POST = withAuth(async (request) => {
 
   const token     = uuidv4();
   const overallExpiresAt = new Date(Date.now() + clampedDuration * 60 * 1000);
-  // First token expires in 29s or at overall end, whichever is sooner
-  const tokenExpiresAt = new Date(Math.min(Date.now() + 29 * 1000, overallExpiresAt.getTime()));
+  // First token expires in 45s or at overall end, whichever is sooner
+  const tokenExpiresAt = new Date(Math.min(Date.now() + 45 * 1000, overallExpiresAt.getTime()));
   const date      = format(new Date(), "yyyy-MM-dd");
 
   const session = await QRSession.create({ token, sectionId, teacherId, date, expiresAt: tokenExpiresAt });
