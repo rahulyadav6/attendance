@@ -30,6 +30,7 @@ export const PUT = withAuth(async (request, { params }) => {
     if (body.isBlocked !== undefined) student.isBlocked = body.isBlocked;
     if (body.sectionIds !== undefined) student.sectionIds = body.sectionIds;
     if (body.photo !== undefined) student.photo = body.photo;
+    if (Array.isArray(body.descriptor) && body.descriptor.length === 128) student.descriptor = body.descriptor;
 
     await student.save();
     await student.populate("sectionIds", "name");

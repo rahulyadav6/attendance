@@ -26,7 +26,7 @@ export const POST = withAuth(async (request) => {
   await connectDB();
   const teacherId = request.teacher?.id;
   if (!teacherId) return NextResponse.json({ error: "Unauthorized - Teacher only" }, { status: 403 });
-  const { name, studentId, email, password, sectionId, photo } = await request.json();
+  const { name, studentId, email, password, sectionId, photo, descriptor } = await request.json();
 
   if (!name?.trim() || !studentId?.trim() || !email?.trim() || !password?.trim()) {
     return NextResponse.json(
@@ -52,7 +52,7 @@ export const POST = withAuth(async (request) => {
         sectionIds: sectionId ? [sectionId] : [],
         teacherId,
         photo: photo || "",
-        descriptor: [],
+        descriptor: Array.isArray(descriptor) && descriptor.length === 128 ? descriptor : [],
       });
     }
 

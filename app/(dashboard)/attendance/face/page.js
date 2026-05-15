@@ -19,8 +19,15 @@ export default function FaceAttendancePage() {
   const videoRef    = useRef(null);
   const canvasRef   = useRef(null);
   const streamRef   = useRef(null);
-  const intervalRef = useRef(null);
-  const faceApiRef  = useRef(null);
+  const intervalRef  = useRef(null);
+  const faceApiRef   = useRef(null);
+  const markedIdsRef = useRef(new Set()); // synchronous duplicate guard
+  const sectionIdRef = useRef(sectionId);
+  const studentsRef  = useRef(students);
+
+  // Keep refs in sync with state
+  useEffect(() => { sectionIdRef.current = sectionId; }, [sectionId]);
+  useEffect(() => { studentsRef.current = students; }, [students]);
 
   // Load sections on mount
   useEffect(() => {
@@ -33,6 +40,7 @@ export default function FaceAttendancePage() {
     api.get(`/students?sectionId=${sectionId}`).then(({ data }) => {
       setStudents(data.students);
       setMarked([]);
+      markedIdsRef.current = new Set();
     });
   }, [sectionId]);
 
@@ -84,8 +92,18 @@ export default function FaceAttendancePage() {
 
   function stopCamera() {
     clearInterval(intervalRef.current);
-    streamRef.current?.getTracks().forEach((t) => t.stop());
-    streamRef.current = null;
+    // Stop all tracks to release camera hardware
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((t) => {
+        t.stop();
+        t.enabled = false;
+      });
+      streamRef.current = null;
+    }
+    // Clear video element source
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
     setActive(false);
     setDetecting(false);
     setLastMatch(null);
@@ -93,12 +111,12 @@ export default function FaceAttendancePage() {
 
   function buildMatcher() {
     const faceapi   = faceApiRef.current;
-    const trained   = students.filter((s) => s.descriptor?.length === 128);
+    const trained   = studentsRef.current.filter((s) => s.descriptor?.length === 128);
     const labeled   = trained.map((s) => {
       const desc = new Float32Array(s.descriptor);
       return new faceapi.LabeledFaceDescriptors(s._id, [desc]);
     });
-    return new faceapi.FaceMatcher(labeled, 0.5); // 0.5 = threshold (lower = stricter)
+    return new faceapi.FaceMatcher(labeled, 0.5);
   }
 
   function startDetection() {
@@ -135,7 +153,7 @@ export default function FaceAttendancePage() {
           ctx.strokeRect(box.x, box.y, box.width, box.height);
 
           if (isKnown) {
-            const student = students.find((s) => s._id === match.label);
+            const student = studentsRef.current.find((s) => s._id === match.label);
             if (student) {
               // Draw name label
               ctx.fillStyle = "#1D9E75";
@@ -144,9 +162,9 @@ export default function FaceAttendancePage() {
               ctx.font      = "13px 'DM Sans', system-ui, sans-serif";
               ctx.fillText(student.name, box.x + 6, box.y - 7);
 
-              // Auto-mark if not already marked
-              const alreadyMarked = marked.some((m) => m.studentId === student._id);
-              if (!alreadyMarked) {
+              // Auto-mark if not already marked (use synchronous ref to prevent duplicates)
+              if (!markedIdsRef.current.has(student._id)) {
+                markedIdsRef.current.add(student._id);
                 await markPresent(student);
               }
             }
@@ -164,28 +182,42 @@ export default function FaceAttendancePage() {
     try {
       await api.post("/attendance", {
         studentId: student._id,
-        sectionId,
+        sectionId: sectionIdRef.current,
         method: "face",
         status: "present",
       });
-      setMarked((prev) => [...prev, { studentId: student._id, name: student.name, time: new Date() }]);
+      setMarked((prev) => {
+        if (prev.some((m) => m.studentId === student._id)) return prev;
+        return [...prev, { studentId: student._id, name: student.name, time: new Date() }];
+      });
       setLastMatch(student.name);
       setTimeout(() => setLastMatch(null), 3000);
       toast.success(`${student.name} marked present`);
     } catch (err) {
-      if (err.response?.data?.code !== "DUPLICATE") {
+      if (err.response?.data?.code === "DUPLICATE") {
+        // Already marked today — update UI to reflect that
+        setMarked((prev) => {
+          if (prev.some((m) => m.studentId === student._id)) return prev;
+          return [...prev, { studentId: student._id, name: student.name, time: new Date() }];
+        });
+      } else {
         console.error("Mark error:", err);
+        // Remove from ref so it can retry on next detection
+        markedIdsRef.current.delete(student._id);
       }
-      // Silently ignore duplicates — student was already marked
-      setMarked((prev) => [...prev, { studentId: student._id, name: student.name, time: new Date() }]);
     }
   }
 
   // Manual mark from list
   async function manualMark(student) {
+    if (markedIdsRef.current.has(student._id)) { toast.error("Already marked"); return; }
+    markedIdsRef.current.add(student._id);
     try {
       await api.post("/attendance", { studentId: student._id, sectionId, method: "manual", status: "present" });
-      setMarked((prev) => [...prev, { studentId: student._id, name: student.name, time: new Date() }]);
+      setMarked((prev) => {
+        if (prev.some((m) => m.studentId === student._id)) return prev;
+        return [...prev, { studentId: student._id, name: student.name, time: new Date() }];
+      });
       toast.success(`${student.name} manually marked`);
     } catch (err) {
       if (err.response?.data?.code === "DUPLICATE") toast.error("Already marked today");

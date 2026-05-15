@@ -3,7 +3,7 @@ import { useState, useEffect, useCallback, useRef, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import PageHeader from "@/components/ui/PageHeader";
 import { Card, Button, Modal, Input, Select, EmptyState, Spinner, Badge } from "@/components/ui/index";
-import FaceTrainer from "@/components/attendance/FaceTrainer";
+import CameraCapture from "@/components/attendance/CameraCapture";
 import api from "@/lib/api";
 import toast from "react-hot-toast";
 
@@ -24,8 +24,7 @@ function StudentsContent() {
   const [confirmModal, setConfirmModal] = useState(null); // { type: "block"|"delete", student: s }
   const [newPw,       setNewPw]       = useState("");
   const [pwSaving,    setPwSaving]    = useState(false);
-  const [form, setForm] = useState({ name: "", studentId: "", email: "", password: "", photo: "" });
-  const fileRef = useRef(null);
+  const [form, setForm] = useState({ name: "", studentId: "", email: "", password: "", photo: "", descriptor: [] });
 
   const displayedStudents = students
     .filter(s => !filter || s.sectionIds?.some(sec => sec._id === filter || sec === filter))
@@ -52,13 +51,8 @@ function StudentsContent() {
 
   useEffect(() => { load(); }, [load]);
 
-  function handlePhoto(e) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    if (file.size > 2 * 1024 * 1024) { toast.error("Photo must be under 2MB"); return; }
-    const reader = new FileReader();
-    reader.onload = (ev) => setForm((f) => ({ ...f, photo: ev.target.result }));
-    reader.readAsDataURL(file);
+  function handleFaceCapture({ photo, descriptor }) {
+    setForm((f) => ({ ...f, photo, descriptor }));
   }
 
   async function handleAdd() {
@@ -73,6 +67,7 @@ function StudentsContent() {
       if (editingId) {
         const payload = { ...form };
         if (!payload.password) delete payload.password;
+        if (!payload.descriptor?.length) delete payload.descriptor;
         await api.put(`/students/${editingId}`, payload);
         toast.success("Student updated");
       } else {
@@ -80,7 +75,7 @@ function StudentsContent() {
         toast.success("Student added");
       }
       setModal(false); setEditingId(null);
-      setForm({ name: "", studentId: "", email: "", password: "", photo: "" });
+      setForm({ name: "", studentId: "", email: "", password: "", photo: "", descriptor: [] });
       load();
     } catch (err) {
       toast.error(err.response?.data?.error || "Failed to save student");
@@ -88,7 +83,7 @@ function StudentsContent() {
   }
 
   function openEdit(student) {
-    setForm({ name: student.name, studentId: student.studentId, email: student.email, password: "", photo: student.photo || "" });
+    setForm({ name: student.name, studentId: student.studentId, email: student.email, password: "", photo: student.photo || "", descriptor: student.descriptor || [] });
     setEditingId(student._id);
     setModal(true);
   }
@@ -143,7 +138,7 @@ function StudentsContent() {
           <option value="">All sections</option>
           {sections.map((s) => <option key={s._id} value={s._id}>{s.name}</option>)}
         </select>
-        <Button onClick={() => { setEditingId(null); setForm({ name: "", studentId: "", email: "", password: "", photo: "" }); setModal(true); }}>
+        <Button onClick={() => { setEditingId(null); setForm({ name: "", studentId: "", email: "", password: "", photo: "", descriptor: [] }); setModal(true); }}>
           + Add student
         </Button>
       </PageHeader>
@@ -242,15 +237,10 @@ function StudentsContent() {
         <Input label="Email Address (unique)" placeholder="student@school.edu" type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
         <Input label={editingId ? "Reset Password (leave blank to keep current)" : "Password"} placeholder={editingId ? "Leave empty to keep current" : "••••••••"} type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />
         <div style={{ marginBottom: 16 }}>
-          <label style={{ display: "block", fontSize: 12, fontWeight: 500, color: "var(--gray-700)", marginBottom: 6 }}>Photo (for face recognition)</label>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            {form.photo && <img src={form.photo} alt="preview" style={{ width: 44, height: 44, borderRadius: 8, objectFit: "cover" }} />}
-            <button onClick={() => fileRef.current?.click()} style={{ padding: "8px 14px", borderRadius: 8, border: "1px solid var(--gray-200)", background: "var(--gray-50)", color: "var(--gray-700)", fontSize: 12, cursor: "pointer", fontFamily: "'DM Sans', system-ui, sans-serif" }}>
-              {form.photo ? "Change photo" : "Upload photo"}
-            </button>
-            <input ref={fileRef} type="file" accept="image/*" style={{ display: "none" }} onChange={handlePhoto} />
-            {!form.photo && <span style={{ fontSize: 11, color: "var(--gray-400)" }}>JPG/PNG, max 2MB</span>}
-          </div>
+          <CameraCapture
+            existingPhoto={form.photo}
+            onCapture={handleFaceCapture}
+          />
         </div>
         <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 8 }}>
           <Button variant="ghost" onClick={() => { setModal(false); setEditingId(null); }}>Cancel</Button>
