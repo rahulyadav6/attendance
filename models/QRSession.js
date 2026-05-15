@@ -9,6 +9,7 @@ const QRSessionSchema = new mongoose.Schema(
     expiresAt: { type: Date, required: true },
     used:      { type: Boolean, default: false },    // prevents re-use after expiry window
     scannedBy: [{ type: mongoose.Schema.Types.ObjectId, ref: "Student" }], // tracks who scanned
+    parentSessionId: { type: mongoose.Schema.Types.ObjectId, ref: "QRSession", default: null }, // links rotated QR codes
   },
   { timestamps: true }
 );

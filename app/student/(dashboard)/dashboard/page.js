@@ -3,17 +3,12 @@ import { useEffect, useState, useRef } from "react";
 import api from "@/lib/api";
 import { useAuth } from "@/lib/AuthContext";
 import toast from "react-hot-toast";
-import QRCode from "react-qr-code";
 
 export default function StudentDashboard() {
   const { student, logout } = useAuth();
   const [data,          setData]          = useState(null);
   const [loading,       setLoading]       = useState(true);
   const [activeSession, setActiveSession] = useState(null);
-  const [showAttModal,  setShowAttModal]  = useState(false);
-  const [studentIdInput, setStudentIdInput] = useState("");
-  const [markStatus,    setMarkStatus]    = useState("idle"); // idle | loading | success | error | duplicate | expired
-  const [markMessage,   setMarkMessage]   = useState("");
   const [todayAtt,      setTodayAtt]      = useState([]);
   const socketRef = useRef(null);
 
@@ -73,6 +68,21 @@ export default function StudentDashboard() {
           setActiveSession(null);
         });
 
+        // When teacher's QR auto-rotates, update the QR URL and token
+        socket.on("session_rotated", (rotatedData) => {
+          setActiveSession(prev => {
+            if (!prev) return prev;
+            // Only update if it's for the same section
+            if (prev.sectionId && prev.sectionId !== rotatedData.sectionId) return prev;
+            return {
+              ...prev,
+              sessionToken: rotatedData.sessionToken,
+              qrUrl: rotatedData.qrUrl || `${window.location.protocol}//${window.location.host}/scan/${rotatedData.sessionToken}`,
+              expiresAt: rotatedData.expiresAt,
+            };
+          });
+        });
+
         socket.on("section_added", ({ sectionId, sectionName }) => {
           // Refresh full student data to get updated sections with stats
           api.get("/student/me").then(r => {
@@ -128,40 +138,7 @@ export default function StudentDashboard() {
     };
   }, [logout]);
 
-  async function markAttendance() {
-    if (!studentIdInput.trim()) { toast.error("Enter your Student ID"); return; }
-    if (!activeSession?.sessionToken) { toast.error("No active session token"); return; }
-    setMarkStatus("loading");
-    try {
-      const res = await fetch("/api/qr/verify", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token: activeSession.sessionToken, studentId: studentIdInput.trim() }),
-      });
-      const result = await res.json();
-      if (res.ok) {
-        setMarkStatus("success");
-        setMarkMessage("Attendance marked successfully!");
-        toast.success("Attendance marked!");
-        // Refresh today's attendance
-        const todayRes = await api.get("/student/attendance/today");
-        setTodayAtt(todayRes.data.attendance || []);
-      } else {
-        setMarkStatus(result.code?.toLowerCase() || "error");
-        setMarkMessage(result.error || "Failed to mark attendance");
-      }
-    } catch {
-      setMarkStatus("error");
-      setMarkMessage("Network error. Please try again.");
-    }
-  }
 
-  function closeModal() {
-    setShowAttModal(false);
-    setMarkStatus("idle");
-    setMarkMessage("");
-    setStudentIdInput("");
-  }
 
   if (loading) return (
     <div style={{ minHeight: "60vh", display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -204,38 +181,18 @@ export default function StudentDashboard() {
         </div>
       </div>
 
-      {/* Active QR session alert */}
+      {/* Active QR session alert — no QR shown, students must scan from projector */}
       {activeSession && (
-        <div style={{ marginBottom: 24, padding: "24px", background: "#fff", borderRadius: 16, border: "1px solid var(--teal-200)", boxShadow: "0 4px 20px rgba(0,0,0,0.05)", display: "flex", gap: 24, alignItems: "center", flexWrap: "wrap", opacity: data.isBlocked ? 0.6 : 1, pointerEvents: data.isBlocked ? "none" : "auto" }}>
-          <div style={{ flex: "1 1 300px" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
+        <div style={{ marginBottom: 24, padding: "20px 24px", background: "#fff", borderRadius: 16, border: "1px solid var(--teal-200)", boxShadow: "0 4px 20px rgba(0,0,0,0.05)", display: "flex", alignItems: "center", gap: 16 }}>
+          <div style={{ width: 44, height: 44, borderRadius: 12, background: "var(--teal-50)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22, flexShrink: 0 }}>📷</div>
+          <div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
               <div style={{ width: 8, height: 8, borderRadius: "50%", background: "var(--teal-400)", animation: "pulse 1.5s ease infinite" }}/>
-              <span style={{ fontSize: 13, fontWeight: 600, color: "var(--teal-600)", textTransform: "uppercase", letterSpacing: "0.05em" }}>Live Attendance</span>
+              <span style={{ fontSize: 14, fontWeight: 600, color: "var(--gray-900)" }}>{activeSession.sectionName || "Active Session"}</span>
             </div>
-            <h2 style={{ fontSize: 20, fontWeight: 700, color: "var(--gray-900)", marginBottom: 8 }}>{activeSession.sectionName || "Active Session"}</h2>
-            <p style={{ fontSize: 14, color: "var(--gray-500)", lineHeight: 1.5, marginBottom: 20 }}>
-              Scan this QR code with your phone or click the button below to mark your attendance before the session expires.
+            <p style={{ fontSize: 13, color: "var(--gray-500)", lineHeight: 1.5, margin: 0 }}>
+              Your teacher has started an attendance session. Scan the QR code displayed on the classroom projector with your phone to mark your attendance.
             </p>
-            <button
-              onClick={() => { setShowAttModal(true); setMarkStatus("idle"); setStudentIdInput(data.studentId || ""); }}
-              disabled={data.isBlocked}
-              style={{ padding: "11px 24px", background: data.isBlocked ? "var(--gray-300)" : "var(--teal-400)", border: "none", color: "#fff", cursor: data.isBlocked ? "not-allowed" : "pointer", borderRadius: 10, fontSize: 14, fontWeight: 600, fontFamily: "'DM Sans', system-ui, sans-serif" }}
-            >
-              {data.isBlocked ? "Account Blocked" : "Mark Attendance Now"}
-            </button>
-          </div>
-          
-          <div style={{ background: "#F0FBF7", padding: 16, borderRadius: 12, display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
-            {activeSession.qrUrl ? (
-              <div style={{ background: "#fff", padding: 12, borderRadius: 8, boxShadow: "0 2px 10px rgba(0,0,0,0.05)" }}>
-                <QRCode value={activeSession.qrUrl} size={140} />
-              </div>
-            ) : (
-              <div style={{ width: 140, height: 140, background: "var(--gray-100)", borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                <span style={{ fontSize: 11, color: "var(--gray-400)" }}>Generating...</span>
-              </div>
-            )}
-            <div style={{ fontSize: 11, color: "var(--teal-700)", fontWeight: 500 }}>Scan with Phone</div>
           </div>
         </div>
       )}
@@ -247,11 +204,7 @@ export default function StudentDashboard() {
           <div style={{ padding: "20px 24px", background: "var(--gray-50)", borderRadius: 12, border: "1px solid var(--gray-200)", textAlign: "center" }}>
             <div style={{ fontSize: 28, marginBottom: 8 }}>📋</div>
             <div style={{ fontSize: 13, color: "var(--gray-500)" }}>No attendance recorded today yet.</div>
-            {activeSession && (
-              <button onClick={() => setShowAttModal(true)} style={{ marginTop: 12, padding: "8px 18px", background: "var(--teal-400)", border: "none", color: "#fff", borderRadius: 7, fontSize: 13, cursor: "pointer", fontFamily: "'DM Sans', system-ui, sans-serif" }}>
-                Mark attendance now
-              </button>
-            )}
+
           </div>
         ) : (
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 12 }}>
@@ -308,76 +261,7 @@ export default function StudentDashboard() {
         )}
       </div>
 
-      {/* Attendance Modal — popup stays on same page, no redirect */}
-      {showAttModal && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }} onClick={(e) => { if (e.target === e.currentTarget) closeModal(); }}>
-          <div style={{ background: "#fff", borderRadius: 16, padding: "32px 28px", maxWidth: 400, width: "100%", boxShadow: "0 20px 60px rgba(0,0,0,0.15)" }}>
-            {markStatus === "idle" || markStatus === "loading" ? (
-              <>
-                <div style={{ textAlign: "center", marginBottom: 24 }}>
-                  <div style={{ width: 48, height: 48, background: "var(--teal-400)", borderRadius: 12, display: "inline-flex", alignItems: "center", justifyContent: "center", marginBottom: 12 }}>
-                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg>
-                  </div>
-                  <h2 style={{ fontSize: 18, fontWeight: 600, color: "var(--gray-900)", margin: 0 }}>Mark Your Attendance</h2>
-                  <p style={{ fontSize: 13, color: "var(--gray-400)", marginTop: 6 }}>Enter your Student ID to confirm your presence</p>
-                </div>
-                <div style={{ marginBottom: 16 }}>
-                  <label style={{ display: "block", fontSize: 12, fontWeight: 500, color: "var(--gray-700)", marginBottom: 6 }}>Student ID</label>
-                  <input
-                    type="text"
-                    placeholder="e.g. BSCS-001"
-                    value={studentIdInput}
-                    onChange={(e) => setStudentIdInput(e.target.value)}
-                    onKeyDown={(e) => e.key === "Enter" && markAttendance()}
-                    autoFocus
-                    style={{ width: "100%", padding: "11px 14px", border: "2px solid var(--teal-200)", borderRadius: 8, fontSize: 15, outline: "none", fontFamily: "'DM Sans', system-ui, sans-serif", color: "var(--gray-900)", boxSizing: "border-box" }}
-                    onFocus={(e) => e.target.style.borderColor = "var(--teal-400)"}
-                    onBlur={(e)  => e.target.style.borderColor = "var(--teal-200)"}
-                  />
-                </div>
-                <div style={{ display: "flex", gap: 8 }}>
-                  <button onClick={closeModal} style={{ flex: 1, padding: "10px 0", borderRadius: 8, background: "var(--gray-100)", border: "1px solid var(--gray-200)", color: "var(--gray-700)", fontSize: 14, cursor: "pointer", fontFamily: "'DM Sans', system-ui, sans-serif" }}>
-                    Cancel
-                  </button>
-                  <button
-                    onClick={markAttendance}
-                    disabled={markStatus === "loading"}
-                    style={{ flex: 2, padding: "10px 0", borderRadius: 8, background: "var(--teal-400)", border: "none", color: "#fff", fontSize: 14, fontWeight: 500, cursor: markStatus === "loading" ? "not-allowed" : "pointer", fontFamily: "'DM Sans', system-ui, sans-serif" }}
-                  >
-                    {markStatus === "loading" ? "Marking…" : "Mark Attendance"}
-                  </button>
-                </div>
-              </>
-            ) : (
-              <div style={{ textAlign: "center" }}>
-                <div style={{
-                  width: 64, height: 64, borderRadius: "50%",
-                  background: markStatus === "success" ? "#E1F5EE" : markStatus === "duplicate" ? "#E6F1FB" : "#FCEBEB",
-                  border: `2px solid ${markStatus === "success" ? "#9FE1CB" : markStatus === "duplicate" ? "#B5D4F4" : "#F7C1C1"}`,
-                  display: "flex", alignItems: "center", justifyContent: "center", fontSize: 28,
-                  margin: "0 auto 16px",
-                }}>
-                  {markStatus === "success" ? "✓" : markStatus === "duplicate" ? "✓" : "✗"}
-                </div>
-                <div style={{ fontSize: 18, fontWeight: 600, color: markStatus === "success" ? "#085041" : markStatus === "duplicate" ? "#0C447C" : "#791F1F", marginBottom: 8 }}>
-                  {markStatus === "success" ? "Attendance Marked!" : markStatus === "duplicate" ? "Already Marked" : markStatus === "expired" ? "Session Expired" : "Error"}
-                </div>
-                <div style={{ fontSize: 13, color: "var(--gray-600)", marginBottom: 24, lineHeight: 1.6 }}>{markMessage}</div>
-                <div style={{ display: "flex", gap: 8, justifyContent: "center" }}>
-                  {markStatus !== "success" && markStatus !== "duplicate" && (
-                    <button onClick={() => { setMarkStatus("idle"); setMarkMessage(""); }} style={{ padding: "9px 20px", borderRadius: 8, background: "var(--gray-100)", border: "1px solid var(--gray-200)", color: "var(--gray-700)", fontSize: 13, cursor: "pointer", fontFamily: "'DM Sans', system-ui, sans-serif" }}>
-                      Try again
-                    </button>
-                  )}
-                  <button onClick={closeModal} style={{ padding: "9px 20px", borderRadius: 8, background: "var(--teal-400)", border: "none", color: "#fff", fontSize: 13, cursor: "pointer", fontFamily: "'DM Sans', system-ui, sans-serif" }}>
-                    Close
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
+
 
       <style>{`
         @keyframes spin  { to { transform: rotate(360deg); } }

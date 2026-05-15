@@ -27,16 +27,36 @@ export const DELETE = withAuth(async (request, { params }) => {
   if (!session) return NextResponse.json({ error: "Session not found" }, { status: 404 });
 
   // Delete all attendance records associated with this session
+  // Gather all scanned students across the rotation chain
+  const rootParentId = session.parentSessionId || session._id;
+  const allSessions = await QRSession.find({
+    $or: [
+      { _id: rootParentId },
+      { parentSessionId: rootParentId },
+    ],
+  });
+  const allScannedIds = new Set();
+  for (const s of allSessions) {
+    for (const id of s.scannedBy) {
+      allScannedIds.add(id);
+    }
+  }
+
   await Attendance.deleteMany({
     sectionId: session.sectionId,
     date: session.date,
     method: "qr",
     status: { $ne: "absent" },
-    studentId: { $in: session.scannedBy }
+    studentId: { $in: [...allScannedIds] }
   });
 
-  // Delete the session itself
-  await QRSession.deleteOne({ _id: params.sessionId });
+  // Delete the session and all its rotated siblings
+  await QRSession.deleteMany({
+    $or: [
+      { _id: rootParentId },
+      { parentSessionId: rootParentId },
+    ],
+  });
 
   // Broadcast session_ended so students see the QR disappear immediately
   try {

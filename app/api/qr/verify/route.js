@@ -29,8 +29,18 @@ export async function POST(request) {
     return NextResponse.json({ error: "Student ID not found in this section.", code: "NOT_FOUND" }, { status: 404 });
   }
 
-  // 5. Check already scanned
-  if (session.scannedBy.includes(student._id)) {
+  // 5. Check already scanned — across all rotations in this session group
+  const rootParentId = session.parentSessionId || session._id;
+  const siblingSessions = await QRSession.find({
+    $or: [
+      { _id: rootParentId },
+      { parentSessionId: rootParentId },
+    ],
+  });
+  const alreadyScanned = siblingSessions.some(s =>
+    s.scannedBy.some(id => id.toString() === student._id.toString())
+  );
+  if (alreadyScanned) {
     return NextResponse.json({ error: "Attendance already marked for today", code: "DUPLICATE", studentName: student.name }, { status: 409 });
   }
 

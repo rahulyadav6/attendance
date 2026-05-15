@@ -1,11 +1,13 @@
 "use client";
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import PageHeader from "@/components/ui/PageHeader";
 import { Button, Card, Spinner } from "@/components/ui/index";
 import api from "@/lib/api";
 import toast from "react-hot-toast";
 import QRCode from "react-qr-code";
 import { io } from "socket.io-client";
+
+const ROTATE_INTERVAL_SECONDS = 29; // rotate QR every 29 seconds
 
 export default function QRAttendancePage() {
   const [sections,   setSections]   = useState([]);
@@ -18,15 +20,21 @@ export default function QRAttendancePage() {
   const [students,   setStudents]   = useState([]);
   const [generating, setGenerating] = useState(false);
   const [timeLeft,   setTimeLeft]   = useState(0);
+  const [rotateTimeLeft, setRotateTimeLeft] = useState(0); // seconds until next QR rotation
+  const [overallExpiresAt, setOverallExpiresAt] = useState(null); // true end time of the full session
   const pollRef  = useRef(null);
   const timerRef = useRef(null);
+  const rotateRef = useRef(null); // interval ref for auto-rotation
   const socketRef = useRef(null);
 
   const sessionRef = useRef(session);
   const sectionIdRef = useRef(sectionId);
+  const overallExpiresAtRef = useRef(overallExpiresAt);
+  const rootSessionIdRef = useRef(null); // the very first session ID in the rotation chain
 
   useEffect(() => { sessionRef.current = session; }, [session]);
   useEffect(() => { sectionIdRef.current = sectionId; }, [sectionId]);
+  useEffect(() => { overallExpiresAtRef.current = overallExpiresAt; }, [overallExpiresAt]);
 
   useEffect(() => {
     api.get("/sections").then(({ data }) => {
@@ -69,31 +77,50 @@ export default function QRAttendancePage() {
     }
   }, [session]);
 
-  // Handle countdown accurately
+  // Handle overall session countdown
   useEffect(() => {
-    if (!session) {
+    if (!overallExpiresAt) {
       setTimeLeft(0);
       return;
     }
-    const expiry = new Date(session.expiresAt).getTime();
-    const secId = session.sectionId || sectionId;
+    const expiry = new Date(overallExpiresAt).getTime();
     timerRef.current = setInterval(() => {
       const left = Math.max(0, Math.round((expiry - Date.now()) / 1000));
       setTimeLeft(left);
       if (left <= 0) {
         clearInterval(timerRef.current);
+        clearInterval(rotateRef.current);
         // Notify students that the session has expired
         if (socketRef.current) {
-          socketRef.current.emit("end_session", { sectionId: secId });
+          socketRef.current.emit("end_session", { sectionId: sectionIdRef.current });
         }
         setSession(null);
         setQrUrl("");
+        setOverallExpiresAt(null);
+        setRotateTimeLeft(0);
         toast("QR session expired", { icon: "⏱" });
       }
     }, 1000);
 
     return () => clearInterval(timerRef.current);
-  }, [session]);
+  }, [overallExpiresAt]);
+
+  // Handle per-rotation countdown
+  useEffect(() => {
+    if (!session || !overallExpiresAt) {
+      setRotateTimeLeft(0);
+      return;
+    }
+    const sessionExpiry = new Date(session.expiresAt).getTime();
+    const interval = setInterval(() => {
+      const left = Math.max(0, Math.round((sessionExpiry - Date.now()) / 1000));
+      setRotateTimeLeft(left);
+      if (left <= 0) {
+        clearInterval(interval);
+      }
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [session, overallExpiresAt]);
 
   useEffect(() => {
     if (!sectionId) return;
@@ -102,19 +129,51 @@ export default function QRAttendancePage() {
     }).catch(() => {});
   }, [sectionId]);
 
+  // Auto-rotate function
+  const rotateQR = useCallback(async () => {
+    if (!sessionRef.current || !sectionIdRef.current || !overallExpiresAtRef.current) return;
+    
+    // Don't rotate if overall session has expired
+    if (Date.now() >= new Date(overallExpiresAtRef.current).getTime()) return;
+
+    try {
+      const { data } = await api.post("/qr/rotate", {
+        currentSessionId: sessionRef.current._id,
+        sectionId: sectionIdRef.current,
+        overallExpiresAt: overallExpiresAtRef.current,
+      });
+      setSession(data.session);
+      setQrUrl(data.qrUrl);
+      toast("QR code refreshed", { icon: "🔄", duration: 2000 });
+    } catch (err) {
+      // If rotation fails (e.g., session expired), stop rotating
+      console.error("QR rotation failed:", err);
+    }
+  }, []);
+
   async function generate() {
     if (!sectionId) { toast.error("Select a section first"); return; }
     if (duration < 1 || duration > 5) { toast.error("Duration must be between 1 and 5 minutes"); return; }
     setGenerating(true);
     try {
       const { data } = await api.post("/qr/generate", { sectionId, durationMinutes: duration });
+      const overallEnd = data.expiresAt;
       setSession(data.session);
       setQrUrl(data.qrUrl);
+      setOverallExpiresAt(overallEnd);
       setScanned([]);
+      rootSessionIdRef.current = data.session._id;
       
       // Load absent list initially
       const studRes = await api.get(`/students?sectionId=${sectionId}`);
       setAbsent(studRes.data.students);
+
+      // Start auto-rotation: rotate QR every ROTATE_INTERVAL_SECONDS
+      clearInterval(rotateRef.current);
+      rotateRef.current = setInterval(() => {
+        rotateQR();
+      }, ROTATE_INTERVAL_SECONDS * 1000);
+
     } catch (err) {
       toast.error(err.response?.data?.error || "Failed to generate QR");
     } finally { setGenerating(false); }
@@ -139,21 +198,23 @@ export default function QRAttendancePage() {
   }
 
   function stopSession() {
+    clearInterval(rotateRef.current);
     if (socketRef.current && session) {
       socketRef.current.emit("end_session", { sectionId });
     }
-    setSession(null); setQrUrl(""); setTimeLeft(0);
+    setSession(null); setQrUrl(""); setTimeLeft(0); setOverallExpiresAt(null); setRotateTimeLeft(0);
     toast("Session ended. All attendance captured so far is saved.");
   }
 
   async function deleteSession() {
     if (!confirm("Are you sure? This will delete the session AND all attendance records marked so far for it.")) return;
+    clearInterval(rotateRef.current);
     if (socketRef.current && session) {
       socketRef.current.emit("end_session", { sectionId });
     }
     try {
       await api.delete(`/attendance/session/${session._id}`);
-      setSession(null); setQrUrl(""); setTimeLeft(0);
+      setSession(null); setQrUrl(""); setTimeLeft(0); setOverallExpiresAt(null); setRotateTimeLeft(0);
       toast.success("Session and connected attendance deleted.");
     } catch (err) {
       toast.error(err.response?.data?.error || "Failed to delete session");
@@ -286,6 +347,22 @@ export default function QRAttendancePage() {
                 <div style={{ marginTop: 14, fontFamily: "'DM Mono', monospace", fontSize: 11, color: "var(--gray-400)", wordBreak: "break-all" }}>
                   {qrUrl}
                 </div>
+                {/* QR rotation sub-timer */}
+                <div style={{
+                  marginTop: 12,
+                  padding: "8px 16px",
+                  background: "var(--gray-50)",
+                  borderRadius: 8,
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 8,
+                  fontSize: 12,
+                  color: "var(--gray-700)",
+                  border: "1px solid var(--gray-200)",
+                }}>
+                  <span style={{ animation: "spin 2s linear infinite", display: "inline-block" }}>🔄</span>
+                  <span>QR refreshes in: <strong style={{ fontFamily: "'DM Mono', monospace", color: "var(--teal-600)" }}>{formatTime(rotateTimeLeft)}</strong></span>
+                </div>
               </>
             ) : (
               <div style={{ padding: "40px 0", color: "var(--gray-400)" }}>
@@ -329,6 +406,7 @@ export default function QRAttendancePage() {
 
       <style>{`
         @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+        @keyframes spin { to { transform: rotate(360deg); } }
       `}</style>
     </>
   );
